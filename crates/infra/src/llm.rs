@@ -1,0 +1,105 @@
+use anyhow::Result;
+use serde_json::json;
+
+fn load_claude_api_key() -> Option<String> {
+    std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("ANTHROPIC_AUTH_TOKEN").ok())
+        .or_else(|| {
+            let settings_path = dirs::home_dir()?.join(".claude/settings.json");
+            let content = std::fs::read_to_string(settings_path).ok()?;
+            let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
+            settings
+                .get("env")?
+                .get("ANTHROPIC_AUTH_TOKEN")?
+                .as_str()
+                .map(|s| s.to_string())
+        })
+}
+
+fn load_claude_base_url() -> String {
+    std::env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .or_else(|| {
+            let settings_path = dirs::home_dir()?.join(".claude/settings.json");
+            let content = std::fs::read_to_string(settings_path).ok()?;
+            let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
+            settings
+                .get("env")?
+                .get("ANTHROPIC_BASE_URL")?
+                .as_str()
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "https://api.anthropic.com".to_string())
+}
+
+pub fn build_prompt(
+    project: &core::Project,
+    agent: &core::Agent,
+    todos: &str,
+    knowledge: &str,
+    todo_docs: &str,
+    user_input: Option<&str>,
+) -> String {
+    format!(
+r#"{system}
+
+# Project
+Name: {name}
+Path: {path}
+
+# Todos
+{todos}
+
+# Knowledge
+{knowledge}
+{docs}
+# Task
+{task}
+"#,
+        system = agent.system_prompt,
+        name = project.name,
+        path = project.path,
+        todos = todos,
+        knowledge = knowledge,
+        docs = if todo_docs.is_empty() {
+            String::new()
+        } else {
+            format!("\n# Todo Docs\n{}\n", todo_docs)
+        },
+        task = user_input.unwrap_or("请分析当前项目并给出建议")
+    )
+}
+
+pub async fn call_claude(prompt: &str, model: &str) -> Result<String> {
+    let api_key = load_claude_api_key()
+        .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN not found"))?;
+
+    let base_url = load_claude_base_url();
+    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(&url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&json!({
+            "model": model,
+            "max_tokens": 1000,
+            "messages": [
+                { "role": "user", "content": prompt }
+            ]
+        }))
+        .send()
+        .await?;
+
+    let json: serde_json::Value = resp.json().await?;
+
+    let text = json["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Ok(text)
+}
