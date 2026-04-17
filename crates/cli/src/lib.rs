@@ -260,7 +260,6 @@ pub async fn run() -> anyhow::Result<()> {
                         }
 
                         let todos_ctx = format!("- {}\n", selected.title);
-                        let knowledge = infra::load_knowledge(&project.id)?;
 
                         loop {
                             if !cli.yes {
@@ -292,6 +291,14 @@ pub async fn run() -> anyhow::Result<()> {
                             let agent = infra::load_agent(&agent_name)?;
 
                             let stage_ctx = build_stage_context(&todo_doc_id, &current_stage);
+
+                            let knowledge = service::load_knowledge_rag(
+                                &pool,
+                                &project.id,
+                                &selected.title,
+                                &current_stage,
+                                3,
+                            ).await?;
 
                             let task_text = format!(
                                 "当前阶段：{}。Agent 角色：{}。\n\n\
@@ -451,4 +458,18 @@ fn stage_display_name(stage: &str) -> String {
         "done" => "已完成".to_string(),
         _ => stage.to_string(),
     }
+}
+
+fn session_id_for(todo_doc_id: &str, stage: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&format!("{}:{}", todo_doc_id, stage), &mut hasher);
+    let hash = std::hash::Hasher::finish(&hasher);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (hash >> 96) as u32 & 0xFFFFFFFF,
+        (hash >> 80) as u16 & 0xFFFF,
+        (hash >> 64) as u16 & 0x0FFF,
+        (hash >> 48) as u16 & 0xFFFF,
+        hash & 0xFFFFFFFFFFFF,
+    )
 }

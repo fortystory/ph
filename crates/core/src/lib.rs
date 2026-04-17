@@ -44,3 +44,14 @@ pub struct TodoStageLog {
     pub started_at: String,
     pub ended_at: Option<String>,
 }
+
+#[derive(Debug)]
+pub struct KnowledgeChunk {
+    pub id: String,
+    pub project_id: String,
+    pub file_path: String,
+    pub chunk_index: i32,
+    pub content: String,
+    pub content_hash: String,
+    pub updated_at: String,
+}

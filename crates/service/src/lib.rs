@@ -390,3 +390,48 @@ pub async fn run_agent(
 
     Ok(result)
 }
+
+pub async fn load_knowledge_rag(
+    pool: &SqlitePool,
+    project_id: &str,
+    todo_title: &str,
+    stage: &str,
+    top_k: i64,
+) -> Result<String> {
+    // Initialize embedder (downloads model on first use)
+    let embedder = infra::Embedder::new()?;
+
+    // Check and update index if stale
+    if infra::is_stale(pool, project_id).await? {
+        infra::update_index(pool, project_id, &embedder).await?;
+    }
+
+    // Build query from todo title + stage context
+    let query = format!("{} {}", todo_title, stage_display_name_cn(stage));
+    let query_vec = embedder.embed_query(&query)?;
+
+    // Semantic search
+    let chunks = infra::search(pool, project_id, query_vec, top_k).await?;
+
+    // Format for prompt
+    let mut result = String::new();
+    for chunk in &chunks {
+        result.push_str(&format!(
+            "\n\n# 文件：{}\n{}",
+            chunk.file_path, chunk.content
+        ));
+    }
+
+    Ok(result)
+}
+
+fn stage_display_name_cn(stage: &str) -> &str {
+    match stage {
+        "requirements" => "需求澄清",
+        "design" => "方案设计",
+        "tasks" => "任务拆解",
+        "progress" => "编码实现",
+        "review" => "验收回顾",
+        _ => stage,
+    }
+}
