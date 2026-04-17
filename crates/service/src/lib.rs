@@ -13,6 +13,15 @@ pub struct WorkItem {
     pub short_id: String,
     pub ids: Vec<String>,
     pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeReport {
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub stage_durations: Vec<(String, i64)>, // (stage, seconds)
+    pub total_seconds: i64,
 }
 
 pub fn add_project(id: &str, name: &str, path: &str) -> Result<()> {
@@ -47,6 +56,55 @@ pub fn list_projects() -> Result<Vec<Project>> {
 
 pub async fn add_todo(pool: &SqlitePool, project: &str, title: &str) -> Result<()> {
     infra::add_todo(pool, project, title).await
+}
+
+pub async fn add_work_item(
+    pool: &SqlitePool,
+    title: &str,
+    status: &str,
+    priority: i32,
+    projects: &[String],
+) -> Result<()> {
+    let created_at = chrono::Utc::now().to_rfc3339();
+    for proj in projects {
+        let id = uuid::Uuid::new_v4().to_string();
+        infra::insert_todo(pool, &id, proj, title, status, priority, &created_at).await?;
+    }
+    Ok(())
+}
+
+pub async fn edit_work_item(
+    pool: &SqlitePool,
+    original: &WorkItem,
+    title: &str,
+    status: &str,
+    priority: i32,
+    projects: &[String],
+) -> Result<()> {
+    infra::update_todos_by_ids(pool, &original.ids, title, status, priority).await?;
+    for proj in projects {
+        if !original.projects.contains(proj) {
+            let id = uuid::Uuid::new_v4().to_string();
+            infra::insert_todo(pool, &id, proj, title, status, priority, &original.created_at).await?;
+        }
+    }
+    for proj in &original.projects {
+        if !projects.contains(proj) {
+            infra::delete_todos_by_group(
+                pool,
+                &original.title,
+                original.priority,
+                &original.created_at,
+                proj,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn delete_todos_by_ids(pool: &SqlitePool, ids: &[String]) -> Result<()> {
+    infra::delete_todos_by_ids(pool, ids).await
 }
 
 pub async fn list_todos(pool: &SqlitePool, project: Option<&str>) -> Result<Vec<core::Todo>> {
@@ -91,6 +149,7 @@ fn group_todos_into_work_items(todos: Vec<core::Todo>) -> Vec<WorkItem> {
                 short_id,
                 ids,
                 status: group[0].status.clone(),
+                created_at: group[0].created_at.clone(),
             }
         })
         .collect();
@@ -126,8 +185,75 @@ fn extract_base_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-pub async fn done_todo(pool: &SqlitePool, id: &str) -> Result<()> {
-    infra::mark_done(pool, id).await
+pub async fn start_stage(
+    pool: &SqlitePool,
+    work_item: &WorkItem,
+    stage: &str,
+) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    infra::insert_stage_log(
+        pool,
+        &id,
+        &work_item.title,
+        work_item.priority,
+        &work_item.created_at,
+        stage,
+        &now,
+    )
+    .await?;
+    Ok(id)
+}
+
+pub async fn end_stage(pool: &SqlitePool, log_id: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    infra::end_stage_log(pool, log_id, &now).await
+}
+
+pub async fn load_time_report(pool: &SqlitePool, work_item: &WorkItem) -> Result<TimeReport> {
+    let logs = infra::list_stage_logs(
+        pool,
+        &work_item.title,
+        work_item.priority,
+        &work_item.created_at,
+    )
+    .await?;
+    let mut total = 0i64;
+    let mut stage_durations: Vec<(String, i64)> = Vec::new();
+    for log in &logs {
+        if let Some(ref ended) = log.ended_at {
+            let start = chrono::DateTime::parse_from_rfc3339(&log.started_at)?;
+            let end = chrono::DateTime::parse_from_rfc3339(ended)?;
+            let secs = (end - start).num_seconds().max(0);
+            total += secs;
+            stage_durations.push((log.stage.clone(), secs));
+        }
+    }
+    let todos = infra::list_todos(pool, None).await?;
+    let completed_at = todos
+        .iter()
+        .find(|t| {
+            t.title == work_item.title
+                && t.priority == work_item.priority
+                && t.created_at == work_item.created_at
+        })
+        .and_then(|t| t.completed_at.clone());
+    let started_at = if logs.is_empty() {
+        None
+    } else {
+        Some(logs[0].started_at.clone())
+    };
+    Ok(TimeReport {
+        started_at,
+        completed_at,
+        stage_durations,
+        total_seconds: total,
+    })
+}
+
+pub async fn done_todo_with_time(pool: &SqlitePool, id: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    infra::mark_done_with_time(pool, id, &now).await
 }
 
 pub async fn remove_todo(pool: &SqlitePool, id: &str) -> Result<()> {

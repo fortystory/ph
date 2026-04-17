@@ -18,7 +18,7 @@ pub fn load_knowledge(project_id: &str) -> Result<String> {
         if path.is_file() {
             let content = std::fs::read_to_string(&path)?;
             result.push_str(&format!(
-                "\n\n# File: {}\n{}",
+                "\n\n# 文件：{}\n{}",
                 path.file_name().unwrap().to_string_lossy(),
                 content
             ));

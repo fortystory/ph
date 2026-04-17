@@ -31,4 +31,16 @@ pub struct Todo {
     pub status: String,
     pub priority: i32,
     pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct TodoStageLog {
+    pub id: String,
+    pub title: String,
+    pub priority: i32,
+    pub created_at: String,
+    pub stage: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
 }

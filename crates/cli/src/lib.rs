@@ -146,7 +146,7 @@ pub async fn run() -> anyhow::Result<()> {
                     }
                 }
                 TodoCmd::Done { id } => {
-                    service::done_todo(&pool, &id).await?;
+                    service::done_todo_with_time(&pool, &id).await?;
                     println!("done");
                 }
                 TodoCmd::Remove { id } => {
@@ -184,174 +184,214 @@ pub async fn run() -> anyhow::Result<()> {
 
         Commands::Work => {
             let pool = infra::init_db().await?;
-            let projects = service::list_projects()?;
+            let all_projects = service::list_projects()?;
+            let project_names: Vec<String> = all_projects.iter().map(|p| p.id.clone()).collect();
 
-            let work_items = service::list_pending_work_items(&pool).await?;
-            if work_items.is_empty() {
-                println!("No pending todos.");
-                return Ok(());
-            }
-
-            let items: Vec<picker::Item> = work_items
-                .iter()
-                .enumerate()
-                .map(|(idx, item)| {
+            loop {
+                let work_items = service::list_work_items(&pool, None).await?;
+                let mut items: Vec<picker::Item> = Vec::new();
+                for (idx, item) in work_items.iter().enumerate() {
                     let stage = service::detect_stage(
                         item.ids.first().cloned().as_deref().unwrap_or(&item.short_id)
                     );
-                    let stage_cn = match stage.as_str() {
-                        "requirements" => "需求澄清",
-                        "design" => "方案设计",
-                        "tasks" => "任务拆解",
-                        "progress" => "编码实现",
-                        "review" => "验收回顾",
-                        "done" => "已完成",
-                        _ => &stage,
-                    };
-                    picker::Item {
+                    let stage_cn = stage_display_name(&stage);
+                    let mut detail_lines = vec![
+                        format!("阶段: {}", stage_cn),
+                        format!("ID 列表: {}", item.ids.join(", ")),
+                    ];
+                    if let Ok(time_report) = service::load_time_report(&pool, item).await {
+                        detail_lines.push(format!("添加时间: {}", item.created_at));
+                        if let Some(ref started) = time_report.started_at {
+                            detail_lines.push(format!("开始时间: {}", started));
+                        }
+                        if let Some(ref completed) = time_report.completed_at {
+                            detail_lines.push(format!("完成时间: {}", completed));
+                        }
+                        for (stage, secs) in &time_report.stage_durations {
+                            detail_lines.push(format!("{}: {}m", stage_display_name(stage), secs / 60));
+                        }
+                        if time_report.total_seconds > 0 {
+                            detail_lines.push(format!("总耗时: {}m", time_report.total_seconds / 60));
+                        }
+                    }
+                    items.push(picker::Item {
                         title: item.title.clone(),
                         priority: item.priority,
                         short_id: item.short_id.clone(),
                         projects: item.projects.join(" "),
-                        detail_lines: vec![
-                            format!("阶段: {}", stage_cn),
-                            format!("ID 列表: {}", item.ids.join(", ")),
-                        ],
+                        detail_lines,
                         index: idx,
+                        status: item.status.clone(),
+                    });
+                }
+
+                let action = picker::pick(items, project_names.clone())?;
+                match action {
+                    picker::Action::Quit => break,
+                    picker::Action::Select(idx) => {
+                        let selected = work_items.into_iter().nth(idx).unwrap();
+                        let target_project_id = selected.projects.first()
+                            .ok_or_else(|| anyhow::anyhow!("no project linked to this todo"))?
+                            .clone();
+                        let project = all_projects
+                            .iter()
+                            .find(|p| p.id == target_project_id)
+                            .ok_or_else(|| anyhow::anyhow!("project not found"))?
+                            .clone();
+                        let todo_doc_id = selected.ids.first()
+                            .cloned()
+                            .unwrap_or_else(|| selected.short_id.clone());
+                        let mut current_stage = service::detect_stage(&todo_doc_id);
+                        if current_stage == "done" {
+                            println!("All workflow stages are already completed for this todo.");
+                            let restart = if cli.yes {
+                                false
+                            } else {
+                                tokio::task::spawn_blocking(move || {
+                                    picker::confirm("Restart from review stage?")
+                                }).await??
+                            };
+                            if restart {
+                                current_stage = "review".to_string();
+                            } else {
+                                println!("Exiting. Use `ph todo done <id>` to mark finished.");
+                                continue;
+                            }
+                        }
+
+                        let todos_ctx = format!("- {}\n", selected.title);
+                        let knowledge = infra::load_knowledge(&project.id)?;
+
+                        loop {
+                            if !cli.yes {
+                                let stage = stage_display_name(&current_stage);
+                                let title = selected.title.clone();
+                                let confirmed = tokio::task::spawn_blocking(move || {
+                                    let msg = format!("是否进入阶段 '{}' 处理任务 '{}' ?", stage, title);
+                                    picker::confirm(&msg)
+                                }).await??;
+                                if !confirmed {
+                                    println!("Exiting workflow.");
+                                    break;
+                                }
+                            }
+
+                            let stage_log_id = service::start_stage(
+                                &pool, &selected, &current_stage
+                            ).await?;
+
+                            let work_dir = if current_stage == "progress" {
+                                let path = infra::create_todo_worktree(&project.path, &todo_doc_id)?;
+                                println!("Using worktree: {}", path.display());
+                                path.to_string_lossy().to_string()
+                            } else {
+                                project.path.clone()
+                            };
+
+                            let agent_name = service::resolve_agent_for_stage(&current_stage);
+                            let agent = infra::load_agent(&agent_name)?;
+
+                            let stage_ctx = build_stage_context(&todo_doc_id, &current_stage);
+
+                            let task_text = format!(
+                                "当前阶段：{}。Agent 角色：{}。\n\n\
+                                 请完成本阶段工作，并将输出保存到 {} 中的对应文档。\n\
+                                 完成后请退出 Claude Code，以便工作流继续推进。",
+                                stage_display_name(&current_stage),
+                                agent.name,
+                                infra::todo_docs_dir(&todo_doc_id).display()
+                            );
+
+                            let prompt = infra::build_prompt(
+                                &project,
+                                &agent,
+                                &todos_ctx,
+                                &knowledge,
+                                &stage_ctx,
+                                Some(&task_text),
+                            );
+
+                            let final_prompt = if cli.yes {
+                                prompt
+                            } else {
+                                tokio::task::spawn_blocking(move || {
+                                    edit_prompt(&prompt)
+                                }).await??
+                            };
+
+                            let stage_cn = stage_display_name(&current_stage);
+                            println!(
+                                "\n┌─[{} / stage: {} / agent: {}]─{}─┐",
+                                project.id,
+                                stage_cn,
+                                agent.name,
+                                "─".repeat(20usize.saturating_sub(project.id.len() + stage_cn.len() + agent.name.len()))
+                            );
+                            println!("│  launching claude in {}", work_dir);
+                            println!("│  task:  {}", selected.title);
+                            println!("└{}┘", "─".repeat(48));
+
+                            let status = std::process::Command::new("claude")
+                                .current_dir(&work_dir)
+                                .arg(&final_prompt)
+                                .status()?;
+
+                            if !status.success() {
+                                anyhow::bail!("Claude Code exited with non-zero status");
+                            }
+
+                            service::end_stage(&pool, &stage_log_id).await?;
+
+                            let next_stage = service::detect_stage(&todo_doc_id);
+                            if next_stage == current_stage {
+                                println!("Stage did not progress. Exiting workflow.");
+                                break;
+                            }
+                            if next_stage == "done" {
+                                println!("All stages complete.");
+                                break;
+                            }
+                            current_stage = next_stage;
+                        }
+
+                        let mark_done = if cli.yes {
+                            true
+                        } else {
+                            tokio::task::spawn_blocking(move || {
+                                picker::confirm("Mark todo as done?")
+                            }).await??
+                        };
+
+                        if mark_done {
+                            for id in &selected.ids {
+                                service::done_todo_with_time(&pool, id).await?;
+                            }
+                            println!("[✓] mission complete");
+                        }
                     }
-                })
-                .collect();
-
-            let selected_idx = picker::pick(items)?;
-            let Some(selected_idx) = selected_idx else {
-                return Ok(());
-            };
-            let selected = work_items.into_iter().nth(selected_idx).unwrap();
-
-            let target_project_id = selected.projects.first()
-                .ok_or_else(|| anyhow::anyhow!("no project linked to this todo"))?
-                .clone();
-
-            let project = projects
-                .into_iter()
-                .find(|p| p.id == target_project_id)
-                .ok_or_else(|| anyhow::anyhow!("project not found"))?;
-
-            let todo_doc_id = selected.ids.first()
-                .cloned()
-                .unwrap_or_else(|| selected.short_id.clone());
-
-            let mut current_stage = service::detect_stage(&todo_doc_id);
-            if current_stage == "done" {
-                println!("All workflow stages are already completed for this todo.");
-                let restart = if cli.yes {
-                    false
-                } else {
-                    tokio::task::spawn_blocking(move || {
-                        picker::confirm("Restart from review stage?")
-                    }).await??
-                };
-                if restart {
-                    current_stage = "review".to_string();
-                } else {
-                    println!("Exiting. Use `ph todo done <id>` to mark finished.");
-                    return Ok(());
-                }
-            }
-
-            let todos_ctx = infra::load_todo_context(&pool, &project.id).await?;
-            let knowledge = infra::load_knowledge(&project.id)?;
-
-            loop {
-                if !cli.yes {
-                    let stage = current_stage.clone();
-                    let title = selected.title.clone();
-                    let confirmed = tokio::task::spawn_blocking(move || {
-                        let msg = format!("Enter stage '{}' for '{}' ?", stage, title);
-                        picker::confirm(&msg)
-                    }).await??;
-                    if !confirmed {
-                        println!("Exiting workflow.");
-                        break;
+                    picker::Action::Add { title, priority, status, projects } => {
+                        service::add_work_item(&pool, &title, &status, priority, &projects).await?;
+                        println!("todo added");
+                    }
+                    picker::Action::Edit { index, title, priority, status, projects } => {
+                        if let Some(original) = work_items.get(index) {
+                            service::edit_work_item(&pool, original, &title, &status, priority, &projects).await?;
+                            println!("todo updated");
+                        }
+                    }
+                    picker::Action::Delete(idx) => {
+                        if let Some(item) = work_items.get(idx) {
+                            let title = item.title.clone();
+                            let confirmed = tokio::task::spawn_blocking(move || {
+                                picker::confirm(&format!("确认删除任务 '{}' ?", title))
+                            }).await??;
+                            if confirmed {
+                                service::delete_todos_by_ids(&pool, &item.ids).await?;
+                                println!("todo removed");
+                            }
+                        }
                     }
                 }
-
-                let work_dir = if current_stage == "progress" {
-                    let path = infra::create_todo_worktree(&project.path, &todo_doc_id)?;
-                    println!("Using worktree: {}", path.display());
-                    path.to_string_lossy().to_string()
-                } else {
-                    project.path.clone()
-                };
-
-                let agent_name = service::resolve_agent_for_stage(&current_stage);
-                let agent = infra::load_agent(&agent_name)?;
-
-                let stage_ctx = build_stage_context(&todo_doc_id, &current_stage);
-
-                let task_text = format!(
-                    "Current stage: {}. Agent role: {}.\n\n\
-                     Please work through this stage and save your outputs to the appropriate document in {}.\n\
-                     When finished, exit Claude Code so the workflow can continue.",
-                    current_stage,
-                    agent.name,
-                    infra::todo_docs_dir(&todo_doc_id).display()
-                );
-
-                let prompt = infra::build_prompt(
-                    &project,
-                    &agent,
-                    &todos_ctx,
-                    &knowledge,
-                    &stage_ctx,
-                    Some(&task_text),
-                );
-
-                println!(
-                    "\n┌─[{} / stage: {} / agent: {}]─{}─┐",
-                    project.id,
-                    current_stage,
-                    agent.name,
-                    "─".repeat(20usize.saturating_sub(project.id.len() + current_stage.len() + agent.name.len()))
-                );
-                println!("│  launching claude in {}", work_dir);
-                println!("│  task:  {}", selected.title);
-                println!("└{}┘", "─".repeat(48));
-
-                let status = std::process::Command::new("claude")
-                    .current_dir(&work_dir)
-                    .arg(&prompt)
-                    .status()?;
-
-                if !status.success() {
-                    anyhow::bail!("Claude Code exited with non-zero status");
-                }
-
-                let next_stage = service::detect_stage(&todo_doc_id);
-                if next_stage == current_stage {
-                    println!("Stage did not progress. Exiting workflow.");
-                    break;
-                }
-                if next_stage == "done" {
-                    println!("All stages complete.");
-                    break;
-                }
-                current_stage = next_stage;
-            }
-
-            let mark_done = if cli.yes {
-                true
-            } else {
-                tokio::task::spawn_blocking(move || {
-                    picker::confirm("Mark todo as done?")
-                }).await??
-            };
-
-            if mark_done {
-                for id in &selected.ids {
-                    service::done_todo(&pool, id).await?;
-                }
-                println!("[✓] mission complete");
             }
         }
     }
@@ -374,8 +414,41 @@ fn build_stage_context(todo_doc_id: &str, current_stage: &str) -> String {
         }
         let doc = service::load_stage_doc(todo_doc_id, stage);
         if !doc.is_empty() {
-            ctx.push_str(&format!("\n\n# Stage {}: {}\n{}", num, stage, doc));
+            ctx.push_str(&format!("\n\n# 阶段 {}：{}\n{}", num, stage, doc));
         }
     }
     ctx.trim_start().to_string()
+}
+
+fn edit_prompt(prompt: &str) -> std::io::Result<String> {
+    let path = infra::data_dir().join("prompts").join("last-work-prompt.md");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, prompt)?;
+
+    let edit = picker::confirm("启动 Claude 前是否预览/编辑 prompt？")?;
+    if edit {
+        let editor = std::env::var("EDITOR")
+            .ok()
+            .unwrap_or_else(|| "vi".to_string());
+        let status = std::process::Command::new(&editor)
+            .arg(&path)
+            .status()?;
+        if !status.success() {
+            eprintln!("Warning: editor exited with non-zero status");
+        }
+    }
+
+    std::fs::read_to_string(&path)
+}
+
+fn stage_display_name(stage: &str) -> String {
+    match stage {
+        "requirements" => "需求澄清".to_string(),
+        "design" => "方案设计".to_string(),
+        "tasks" => "任务拆解".to_string(),
+        "progress" => "编码实现".to_string(),
+        "review" => "验收回顾".to_string(),
+        "done" => "已完成".to_string(),
+        _ => stage.to_string(),
+    }
 }

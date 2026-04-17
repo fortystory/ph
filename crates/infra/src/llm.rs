@@ -44,17 +44,17 @@ pub fn build_prompt(
     format!(
 r#"{system}
 
-# Project
-Name: {name}
-Path: {path}
+# 项目
+名称：{name}
+路径：{path}
 
-# Todos
+# 待办事项
 {todos}
 
-# Knowledge
+# 项目知识
 {knowledge}
 {docs}
-# Task
+# 任务
 {task}
 "#,
         system = agent.system_prompt,
@@ -65,9 +65,9 @@ Path: {path}
         docs = if todo_docs.is_empty() {
             String::new()
         } else {
-            format!("\n# Todo Docs\n{}\n", todo_docs)
+            format!("\n# 工作流文档\n{}\n", todo_docs)
         },
-        task = user_input.unwrap_or("请分析当前项目并给出建议")
+        task = user_input.unwrap_or("请分析当前项目并给出建议。")
     )
 }
 

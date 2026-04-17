@@ -30,5 +30,26 @@ pub async fn init_db() -> anyhow::Result<SqlitePool> {
     .execute(&pool)
     .await?;
 
+    sqlx::query("ALTER TABLE todos ADD COLUMN completed_at TEXT")
+        .execute(&pool)
+        .await
+        .ok();
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS todo_stage_logs (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }
