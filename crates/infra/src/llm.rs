@@ -55,6 +55,14 @@ pub fn build_prompt(
             .join("\n")
     };
 
+    let task = user_input.unwrap_or("请分析当前项目并给出建议。");
+    let agent_teams_hint = if projects.len() > 1 {
+        "\n\n> 提示：此任务涉及多个项目。如果你已启用 Claude Code agent teams（设置环境变量 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1），\
+可以在此会话中运行 `Create an agent team with one teammate per project to work on each part in parallel.` 来并行处理各项目。"
+    } else {
+        ""
+    };
+
     format!(
 r#"{system}
 
@@ -68,7 +76,7 @@ r#"{system}
 {knowledge}
 {docs}
 # 任务
-{task}
+{task}{agent_teams_hint}
 "#,
         system = agent.system_prompt,
         project_info = project_info,
@@ -79,7 +87,8 @@ r#"{system}
         } else {
             format!("\n# 工作流文档\n{}\n", todo_docs)
         },
-        task = user_input.unwrap_or("请分析当前项目并给出建议。")
+        task = task,
+        agent_teams_hint = agent_teams_hint,
     )
 }
 
