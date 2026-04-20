@@ -230,14 +230,14 @@ pub async fn run() -> anyhow::Result<()> {
                     picker::Action::Quit => break,
                     picker::Action::Select(idx) => {
                         let selected = work_items.into_iter().nth(idx).unwrap();
-                        let target_project_id = selected.projects.first()
-                            .ok_or_else(|| anyhow::anyhow!("no project linked to this todo"))?
-                            .clone();
-                        let project = all_projects
-                            .iter()
-                            .find(|p| p.id == target_project_id)
-                            .ok_or_else(|| anyhow::anyhow!("project not found"))?
-                            .clone();
+                        let linked_projects: Vec<core::Project> = selected.projects.iter()
+                            .filter_map(|pid| all_projects.iter().find(|p| p.id == *pid))
+                            .cloned()
+                            .collect();
+                        if linked_projects.is_empty() {
+                            anyhow::bail!("no project linked to this todo");
+                        }
+                        let primary_project = &linked_projects[0];
                         let todo_doc_id = selected.ids.first()
                             .cloned()
                             .unwrap_or_else(|| selected.short_id.clone());
@@ -280,11 +280,11 @@ pub async fn run() -> anyhow::Result<()> {
                             ).await?;
 
                             let work_dir = if current_stage == "progress" {
-                                let path = infra::create_todo_worktree(&project.path, &todo_doc_id)?;
+                                let path = infra::create_todo_worktree(&primary_project.path, &todo_doc_id)?;
                                 println!("Using worktree: {}", path.display());
                                 path.to_string_lossy().to_string()
                             } else {
-                                project.path.clone()
+                                primary_project.path.clone()
                             };
 
                             let agent_name = service::resolve_agent_for_stage(&current_stage);
@@ -292,13 +292,23 @@ pub async fn run() -> anyhow::Result<()> {
 
                             let stage_ctx = build_stage_context(&todo_doc_id, &current_stage);
 
-                            let knowledge = service::load_knowledge_rag(
-                                &pool,
-                                &project.id,
-                                &selected.title,
-                                &current_stage,
-                                3,
-                            ).await?;
+                            // Load knowledge from all linked projects
+                            let mut knowledge = String::new();
+                            for proj in &linked_projects {
+                                let proj_knowledge = service::load_knowledge_rag(
+                                    &pool,
+                                    &proj.id,
+                                    &selected.title,
+                                    &current_stage,
+                                    3,
+                                ).await?;
+                                if !proj_knowledge.is_empty() {
+                                    if !knowledge.is_empty() {
+                                        knowledge.push('\n');
+                                    }
+                                    knowledge.push_str(&format!("\n## 项目 {}\n{}", proj.id, proj_knowledge));
+                                }
+                            }
 
                             let task_text = format!(
                                 "当前阶段：{}。Agent 角色：{}。\n\n\
@@ -310,7 +320,7 @@ pub async fn run() -> anyhow::Result<()> {
                             );
 
                             let prompt = infra::build_prompt(
-                                &project,
+                                &linked_projects,
                                 &agent,
                                 &todos_ctx,
                                 &knowledge,
@@ -329,10 +339,10 @@ pub async fn run() -> anyhow::Result<()> {
                             let stage_cn = stage_display_name(&current_stage);
                             println!(
                                 "\n┌─[{} / stage: {} / agent: {}]─{}─┐",
-                                project.id,
+                                primary_project.id,
                                 stage_cn,
                                 agent.name,
-                                "─".repeat(20usize.saturating_sub(project.id.len() + stage_cn.len() + agent.name.len()))
+                                "─".repeat(20usize.saturating_sub(primary_project.id.len() + stage_cn.len() + agent.name.len()))
                             );
                             println!("│  launching claude in {}", work_dir);
                             println!("│  task:  {}", selected.title);
@@ -460,16 +470,3 @@ fn stage_display_name(stage: &str) -> String {
     }
 }
 
-fn session_id_for(todo_doc_id: &str, stage: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&format!("{}:{}", todo_doc_id, stage), &mut hasher);
-    let hash = std::hash::Hasher::finish(&hasher);
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (hash >> 96) as u32 & 0xFFFFFFFF,
-        (hash >> 80) as u16 & 0xFFFF,
-        (hash >> 64) as u16 & 0x0FFF,
-        (hash >> 48) as u16 & 0xFFFF,
-        hash & 0xFFFFFFFFFFFF,
-    )
-}

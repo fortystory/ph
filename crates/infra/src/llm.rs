@@ -34,19 +34,32 @@ fn load_claude_base_url() -> String {
 }
 
 pub fn build_prompt(
-    project: &core::Project,
+    projects: &[core::Project],
     agent: &core::Agent,
     todos: &str,
     knowledge: &str,
     todo_docs: &str,
     user_input: Option<&str>,
 ) -> String {
+    let project_info = if projects.len() == 1 {
+        format!(
+            "名称：{}\n路径：{}",
+            projects[0].name, projects[0].path
+        )
+    } else {
+        projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("{}. {}：{}", i + 1, p.name, p.path))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     format!(
 r#"{system}
 
 # 项目
-名称：{name}
-路径：{path}
+{project_info}
 
 # 待办事项
 {todos}
@@ -58,8 +71,7 @@ r#"{system}
 {task}
 "#,
         system = agent.system_prompt,
-        name = project.name,
-        path = project.path,
+        project_info = project_info,
         todos = todos,
         knowledge = knowledge,
         docs = if todo_docs.is_empty() {
