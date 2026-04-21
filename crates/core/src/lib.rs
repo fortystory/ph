@@ -21,6 +21,7 @@ pub struct Agent {
     pub name: String,
     pub model: String,
     pub system_prompt: String,
+    pub stage_prompts: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug)]

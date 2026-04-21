@@ -1,3 +1,6 @@
+pub mod stage_prompt;
+pub use stage_prompt::stage_instruction;
+
 use anyhow::Result;
 use core::Project;
 use infra::{load_projects, save_projects};
@@ -384,7 +387,7 @@ pub async fn run_agent(
     let todos = infra::load_todo_context(pool, project_id).await?;
     let knowledge = infra::load_knowledge(project_id)?;
 
-    let prompt = infra::build_prompt(&[project.clone()], &agent, &todos, &knowledge, "", user_input);
+    let prompt = infra::build_prompt(project, &[], &agent, &todos, &knowledge, "", user_input);
 
     let result = infra::call_claude(&prompt, &agent.model).await?;
 

@@ -34,29 +34,27 @@ fn load_claude_base_url() -> String {
 }
 
 pub fn build_prompt(
-    projects: &[core::Project],
+    primary_project: &core::Project,
+    related_projects: &[core::Project],
     agent: &core::Agent,
     todos: &str,
     knowledge: &str,
     todo_docs: &str,
     user_input: Option<&str>,
 ) -> String {
-    let project_info = if projects.len() == 1 {
-        format!(
-            "名称：{}\n路径：{}",
-            projects[0].name, projects[0].path
-        )
-    } else {
-        projects
-            .iter()
-            .enumerate()
-            .map(|(i, p)| format!("{}. {}：{}", i + 1, p.name, p.path))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let mut project_info = format!(
+        "## 主项目（当前工作目录）\n名称：{}\n路径：{}",
+        primary_project.name, primary_project.path
+    );
+    if !related_projects.is_empty() {
+        project_info.push_str("\n\n## 关联项目（提供上下文/依赖）\n");
+        for (i, p) in related_projects.iter().enumerate() {
+            project_info.push_str(&format!("{}. {}：{}\n", i + 1, p.name, p.path));
+        }
+    }
 
     let task = user_input.unwrap_or("请分析当前项目并给出建议。");
-    let agent_teams_hint = if projects.len() > 1 {
+    let agent_teams_hint = if !related_projects.is_empty() {
         "\n\n> 提示：此任务涉及多个项目。如果你已启用 Claude Code agent teams（设置环境变量 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1），\
 可以在此会话中运行 `Create an agent team with one teammate per project to work on each part in parallel.` 来并行处理各项目。"
     } else {

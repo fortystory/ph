@@ -259,7 +259,13 @@ pub async fn run() -> anyhow::Result<()> {
                             }
                         }
 
-                        let todos_ctx = format!("- {}\n", selected.title);
+                        let todos_ctx = format!(
+                            "- {}\n  优先级: {}\n  关联项目: {}\n  状态: {}\n",
+                            selected.title,
+                            selected.priority,
+                            selected.projects.join(", "),
+                            selected.status,
+                        );
 
                         loop {
                             if !cli.yes {
@@ -309,18 +315,31 @@ pub async fn run() -> anyhow::Result<()> {
                                     knowledge.push_str(&format!("\n## 项目 {}\n{}", proj.id, proj_knowledge));
                                 }
                             }
+                            if !knowledge.is_empty() {
+                                knowledge.insert_str(
+                                    0,
+                                    &format!(
+                                        "\n> 以下知识片段通过语义检索获得，与「{}」的「{}」阶段最相关。请结合这些背景知识完成本阶段工作。\n",
+                                        selected.title,
+                                        stage_display_name(&current_stage)
+                                    ),
+                                );
+                            }
 
-                            let task_text = format!(
-                                "当前阶段：{}。Agent 角色：{}。\n\n\
-                                 请完成本阶段工作，并将输出保存到 {} 中的对应文档。\n\
-                                 完成后请退出 Claude Code，以便工作流继续推进。",
-                                stage_display_name(&current_stage),
-                                agent.name,
-                                infra::todo_docs_dir(&todo_doc_id).display()
+                            let task_text = service::stage_instruction(
+                                &current_stage,
+                                &infra::todo_docs_dir(&todo_doc_id),
+                                &agent,
                             );
 
+                            let related = if linked_projects.len() > 1 {
+                                &linked_projects[1..]
+                            } else {
+                                &[]
+                            };
                             let prompt = infra::build_prompt(
-                                &linked_projects,
+                                &linked_projects[0],
+                                related,
                                 &agent,
                                 &todos_ctx,
                                 &knowledge,
