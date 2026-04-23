@@ -46,10 +46,16 @@ pub fn build_prompt(
         "## 主项目（当前工作目录）\n名称：{}\n路径：{}",
         primary_project.name, primary_project.path
     );
+    if let Some(ref prompt) = primary_project.prompt {
+        project_info.push_str(&format!("\n\n{}\n", prompt.trim()));
+    }
     if !related_projects.is_empty() {
         project_info.push_str("\n\n## 关联项目（提供上下文/依赖）\n");
         for (i, p) in related_projects.iter().enumerate() {
             project_info.push_str(&format!("{}. {}：{}\n", i + 1, p.name, p.path));
+            if let Some(ref prompt) = p.prompt {
+                project_info.push_str(&format!("   {}\n", prompt.trim()));
+            }
         }
     }
 

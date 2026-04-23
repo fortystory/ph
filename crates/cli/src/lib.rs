@@ -46,6 +46,9 @@ pub enum Commands {
 
     /// Start an interactive work session: select a todo and launch Claude Code
     Work,
+
+    /// 启动 MCP 服务器 (stdio 模式)
+    McpServer,
 }
 
 #[derive(Subcommand)]
@@ -182,6 +185,10 @@ pub async fn run() -> anyhow::Result<()> {
             println!("{}", result);
         }
 
+        Commands::McpServer => {
+            infra::run_mcp_server().await?;
+        }
+
         Commands::Work => {
             let pool = infra::init_db().await?;
             let all_projects = service::list_projects()?;
@@ -242,6 +249,29 @@ pub async fn run() -> anyhow::Result<()> {
                             .cloned()
                             .unwrap_or_else(|| selected.short_id.clone());
                         let mut current_stage = service::detect_stage(&todo_doc_id);
+
+                        // 预澄清检查：如果尚无需求文档，询问是否预澄清
+                        if current_stage == "requirements" && !cli.yes {
+                            let title = selected.title.clone();
+                            let should_clarify = tokio::task::spawn_blocking(move || {
+                                picker::confirm(&format!("任务 '{}' 尚无需求文档，是否先进行需求预澄清？", title))
+                            }).await??;
+                            if should_clarify {
+                                let agent_name = service::resolve_agent_for_stage("requirements");
+                                let agent = infra::load_agent(&agent_name)?;
+                                service::run_pre_clarify(
+                                    &pool,
+                                    &selected,
+                                    primary_project,
+                                    &linked_projects[1..],
+                                    &todo_doc_id,
+                                    &agent,
+                                ).await?;
+                                // 预澄清后重新检测阶段
+                                current_stage = service::detect_stage(&todo_doc_id);
+                            }
+                        }
+
                         if current_stage == "done" {
                             println!("All workflow stages are already completed for this todo.");
                             let restart = if cli.yes {
@@ -406,8 +436,49 @@ pub async fn run() -> anyhow::Result<()> {
                         }
                     }
                     picker::Action::Add { title, priority, status, projects } => {
-                        service::add_work_item(&pool, &title, &status, priority, &projects).await?;
+                        let created_at = service::add_work_item(&pool, &title, &status, priority, &projects).await?;
                         println!("todo added");
+
+                        let should_clarify = if cli.yes {
+                            false
+                        } else {
+                            let t = title.clone();
+                            tokio::task::spawn_blocking(move || {
+                                picker::confirm(&format!("是否立即对新任务 '{}' 进行需求预澄清？", t))
+                            }).await??
+                        };
+
+                        if should_clarify {
+                            let work_items = service::list_work_items(&pool, None).await?;
+                            if let Some(item) = work_items.iter().find(|i| {
+                                i.title == title && i.priority == priority && i.created_at == created_at
+                            }) {
+                                let linked_projects: Vec<core::Project> = item.projects.iter()
+                                    .filter_map(|pid| all_projects.iter().find(|p| p.id == *pid))
+                                    .cloned()
+                                    .collect();
+                                if !linked_projects.is_empty() {
+                                    let primary = &linked_projects[0];
+                                    let todo_doc_id = item.ids.first()
+                                        .cloned()
+                                        .unwrap_or_else(|| item.short_id.clone());
+
+                                    service::create_todo_docs_dir(&todo_doc_id)?;
+
+                                    let agent_name = service::resolve_agent_for_stage("requirements");
+                                    let agent = infra::load_agent(&agent_name)?;
+
+                                    service::run_pre_clarify(
+                                        &pool,
+                                        item,
+                                        primary,
+                                        &linked_projects[1..],
+                                        &todo_doc_id,
+                                        &agent,
+                                    ).await?;
+                                }
+                            }
+                        }
                     }
                     picker::Action::Edit { index, title, priority, status, projects } => {
                         if let Some(original) = work_items.get(index) {
