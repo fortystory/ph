@@ -80,5 +80,21 @@ pub async fn init_db() -> anyhow::Result<SqlitePool> {
     .execute(&pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS knowledge_sync_log (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            synced_at TEXT NOT NULL,
+            UNIQUE(project_id, source_type, source_id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }

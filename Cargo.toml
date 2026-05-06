@@ -20,7 +20,7 @@ members = [
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", default-features = true, features = ["derive", "std", "env"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 anyhow = "1"

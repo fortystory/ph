@@ -61,6 +61,8 @@
 | Todos      | SQLite  |
 | Workspace  | 软链接  |
 | Docs       | Markdown |
+| Knowledge  | 文件 + Qdrant（向量） |
+| Sync Log   | SQLite  |
 
 ---
 
@@ -91,10 +93,18 @@ Storage（文件系统 / SQLite）
 ```
 crates/
 ├── core/       # 仅数据模型
-├── infra/      # 文件系统、SQLite、软链接
+├── infra/      # 文件系统、SQLite、Qdrant、MCP 服务器
+│   ├── db.rs               # 数据库初始化与 schema
+│   ├── git.rs              # Git 操作（worktree、commits）
+│   ├── knowledge.rs        # 知识库文件加载
+│   ├── knowledge_index.rs  # Qdrant 向量索引
+│   ├── knowledge_capture.rs # 知识捕获（对话、实时）
+│   ├── mcp_server.rs       # MCP stdio 服务器
+│   └── ...
 ├── service/    # 业务逻辑
-├── cli/        # 命令行界面
-└── web/        # HTTP 服务器（未来）
+│   ├── knowledge_sync.rs   # 知识同步（git、对话）
+│   └── ...
+└── cli/        # 命令行界面
 ```
 
 ---
@@ -133,9 +143,14 @@ workspace/
 
 ```
 knowledge/<project_id>/
+├── memory/         # 手动维护的知识
+├── rules/          # 项目规则
+├── commits/        # 从 git 历史自动提取
+├── conversations/  # 从 Claude Code 对话自动提取
+└── live/           # 通过 MCP 工具实时捕获
 ```
 
-包含 Markdown 或纯文本文件。
+知识通过 Qdrant 向量数据库进行语义搜索。每个项目对应一个 collection：`ph-knowledge-{project_id}`。
 
 ---
 
@@ -228,6 +243,34 @@ docs/<todo-id>/
 - **Search 模式**：输入内容进行 `SkimMatcherV2` 模糊过滤，`Esc` 清空，`Enter` 确认
 - 卡片固定 92 字符宽，垂直居中，主界面无边框，顶部为 ASCII logo
 - 详情面板显示翻译后的阶段名称和项目信息，支持 CJK 对齐
+- `c` 键复制选中 todo 标题到剪贴板
+
+---
+
+### MCP 服务器（`ph mcp-server`）
+
+通过 MCP 协议（JSON-RPC over stdio）暴露工具给 Claude Code：
+
+| 工具 | 功能 |
+|------|------|
+| `ph_knowledge_search` | 语义搜索项目知识库 |
+| `ph_todo_list` | 列出待办事项 |
+| `ph_todo_doc_read` | 读取 todo 阶段文档 |
+| `ph_knowledge_read` | 读取知识库文件 |
+| `ph_knowledge_capture` | 实时捕获知识到向量库 |
+
+配置位置：`~/.claude.json` 的 `mcpServers.ph`
+
+### 知识同步（`ph knowledge sync`）
+
+从 git commits 和 Claude Code 对话中自动提取知识：
+
+```bash
+ph knowledge sync --project <id>   # 同步指定项目
+ph knowledge sync                  # 同步所有项目
+```
+
+`ph work` 工作流中每阶段结束后自动触发 git 知识同步。
 
 ---
 

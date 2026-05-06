@@ -5,6 +5,7 @@ pub mod embed;
 pub mod fs;
 pub mod git;
 pub mod knowledge;
+pub mod knowledge_capture;
 pub mod knowledge_index;
 pub mod llm;
 pub mod mcp_server;
@@ -18,8 +19,12 @@ pub use fs::{
     create_knowledge_dir, create_project_symlink, create_todo_docs_dir, data_dir, docs_dir,
     init_dirs, knowledge_dir, todo_docs_dir, workspace_dir,
 };
+pub use knowledge_capture::{
+    is_source_synced, parse_session, record_sync, write_knowledge_file,
+};
 pub use git::{
-    create_todo_worktree, remove_todo_worktree, run_git_command,
+    create_todo_worktree, get_commit_diff, get_recent_commits, remove_todo_worktree,
+    run_git_command, GitCommitInfo,
 };
 pub use knowledge::load_knowledge;
 pub use knowledge_index::{clear_index, is_stale, search, update_index};

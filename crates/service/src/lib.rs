@@ -1,3 +1,4 @@
+pub mod knowledge_sync;
 pub mod stage_prompt;
 pub use stage_prompt::stage_instruction;
 

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::io::Write;
 
-use crate::{embed::Embedder, knowledge_index, todo};
+use crate::{embed::Embedder, knowledge_capture, knowledge_index, todo};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -77,6 +77,11 @@ pub async fn run_mcp_server() -> Result<()> {
                 continue;
             }
         };
+
+        // Notifications (messages without id) should not receive a response
+        if request.id.is_none() {
+            continue;
+        }
 
         let response = handle_request(&pool, request).await;
         send_response(response);
@@ -182,6 +187,34 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "ph_knowledge_capture",
+                    "description": "将当前对话中产生的有价值知识保存到项目知识库中",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {
+                                "type": "string",
+                                "description": "项目 ID"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "知识标题"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Markdown 格式的知识内容"
+                            },
+                            "category": {
+                                "type": "string",
+                                "enum": ["decision", "solution", "context", "incident"],
+                                "description": "知识类别",
+                                "default": "context"
+                            }
+                        },
+                        "required": ["project_id", "title", "content"]
+                    }
+                },
+                {
                     "name": "ph_knowledge_read",
                     "description": "直接读取项目知识库中的指定文件内容",
                     "inputSchema": {
@@ -242,6 +275,10 @@ async fn handle_tools_call(
         "ph_knowledge_read" => match handle_knowledge_read(arguments) {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, format!("Knowledge read failed: {e}")),
+        },
+        "ph_knowledge_capture" => match handle_knowledge_capture(pool, arguments).await {
+            Ok(result) => JsonRpcResponse::success(id, result),
+            Err(e) => JsonRpcResponse::error(id, -32000, format!("Knowledge capture failed: {e}")),
         },
         _ => JsonRpcResponse::error(id, -32601, format!("Tool not found: {name}")),
     }
@@ -366,5 +403,29 @@ fn handle_knowledge_read(args: Value) -> Result<Value> {
         "project_id": project_id,
         "file_path": file_path,
         "content": content,
+    }))
+}
+
+async fn handle_knowledge_capture(pool: &SqlitePool, args: Value) -> Result<Value> {
+    let project_id = args["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("project_id required"))?;
+    let title = args["title"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("title required"))?;
+    let content = args["content"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("content required"))?;
+    let category = args["category"].as_str().unwrap_or("context");
+
+    let file_path = knowledge_capture::capture_knowledge(
+        pool, project_id, title, content, category,
+    )
+    .await?;
+
+    Ok(json!({
+        "project_id": project_id,
+        "file_path": file_path,
+        "status": "captured",
     }))
 }

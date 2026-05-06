@@ -49,6 +49,22 @@ pub enum Commands {
 
     /// 启动 MCP 服务器 (stdio 模式)
     McpServer,
+
+    /// 知识库管理
+    Knowledge {
+        #[command(subcommand)]
+        cmd: KnowledgeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KnowledgeCmd {
+    /// 从对话和 git 历史同步知识
+    Sync {
+        /// 指定项目 ID，不指定则同步所有项目
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -188,6 +204,46 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::McpServer => {
             infra::run_mcp_server().await?;
         }
+
+        Commands::Knowledge { cmd } => match cmd {
+            KnowledgeCmd::Sync { project } => {
+                let pool = infra::init_db().await?;
+                let projects = service::list_projects()?;
+
+                let targets = if let Some(ref pid) = project {
+                    vec![projects.iter().find(|p| p.id == *pid)
+                        .ok_or_else(|| anyhow::anyhow!("project '{}' not found", pid))?]
+                } else {
+                    projects.iter().collect()
+                };
+
+                for proj in targets {
+                    println!("syncing knowledge for {}...", proj.id);
+
+                    let git_report = service::knowledge_sync::sync_git_knowledge(
+                        &pool, &proj.id, &proj.path,
+                    ).await?;
+                    println!(
+                        "  git: {} commits processed, {} files written, {} skipped",
+                        git_report.commits_processed,
+                        git_report.files_written,
+                        git_report.skipped_duplicates,
+                    );
+
+                    let conv_report = service::knowledge_sync::sync_conversation_knowledge(
+                        &pool, &proj.id, &proj.path,
+                    ).await?;
+                    println!(
+                        "  conversations: {} sessions processed, {} files written, {} skipped",
+                        conv_report.commits_processed,
+                        conv_report.files_written,
+                        conv_report.skipped_duplicates,
+                    );
+                }
+
+                println!("knowledge sync complete");
+            }
+        },
 
         Commands::Work => {
             let pool = infra::init_db().await?;
@@ -407,6 +463,17 @@ pub async fn run() -> anyhow::Result<()> {
                             }
 
                             service::end_stage(&pool, &stage_log_id).await?;
+
+                            // Auto-sync knowledge after each stage
+                            for proj in &linked_projects {
+                                if let Ok(report) = service::knowledge_sync::sync_git_knowledge(
+                                    &pool, &proj.id, &proj.path,
+                                ).await {
+                                    if report.files_written > 0 {
+                                        eprintln!("[knowledge] synced {} commit files for {}", report.files_written, proj.id);
+                                    }
+                                }
+                            }
 
                             let next_stage = service::detect_stage(&todo_doc_id);
                             if next_stage == current_stage {

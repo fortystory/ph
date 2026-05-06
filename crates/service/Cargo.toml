@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-sqlx.workspace = true
 chrono.workspace = true
+dirs.workspace = true
+sqlx.workspace = true
 uuid.workspace = true
 
 core = { path = "../core" }
