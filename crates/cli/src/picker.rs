@@ -16,6 +16,52 @@ use ratatui::Frame;
 use ratatui::Terminal;
 use std::io;
 
+fn copy_to_clipboard(text: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // 尝试 xclip，然后 xsel，最后 wl-copy (Wayland)
+        for cmd in &["xclip", "xsel", "wl-copy"] {
+            let result = match *cmd {
+                "xclip" => std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard"])
+                    .stdin(std::process::Stdio::piped())
+                    .spawn(),
+                "xsel" => std::process::Command::new("xsel")
+                    .args(["--clipboard", "--input"])
+                    .stdin(std::process::Stdio::piped())
+                    .spawn(),
+                "wl-copy" => std::process::Command::new("wl-copy")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn(),
+                _ => continue,
+            };
+            if let Ok(mut child) = result {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let _ = child.wait();
+                return true;
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(mut child) = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            use std::io::Write;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return true;
+        }
+    }
+    false
+}
+
 pub struct Item {
     pub title: String,
     pub priority: i32,
@@ -45,6 +91,7 @@ pub enum Action {
     Quit,
 }
 
+#[derive(PartialEq)]
 enum Mode {
     Normal,
     Search,
@@ -169,6 +216,7 @@ struct App {
     form: Option<FormState>,
     edit_index: Option<usize>,
     show_done: bool,
+    copy_msg: Option<String>,
 }
 
 impl App {
@@ -184,6 +232,7 @@ impl App {
             form: None,
             edit_index: None,
             show_done: false,
+            copy_msg: None,
         };
         app.refilter();
         app
@@ -268,6 +317,16 @@ impl App {
         self.refilter();
     }
 
+    fn copy_selected_title(&mut self) {
+        if let Some(item) = self.selected_item() {
+            if copy_to_clipboard(&item.title) {
+                self.copy_msg = Some(format!("✓ 已复制: {}", item.title));
+            } else {
+                self.copy_msg = Some("✗ 复制失败，请安装 xclip/xsel/wl-copy".to_string());
+            }
+        }
+    }
+
     fn pop_search(&mut self) {
         self.search.pop();
         self.refilter();
@@ -326,6 +385,10 @@ fn run_app(
 
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                // 非 c 键时清除复制消息
+                if app.copy_msg.is_some() && !(app.mode == Mode::Normal && matches!(key.code, KeyCode::Char('c'))) {
+                    app.copy_msg = None;
+                }
                 match app.mode {
                     Mode::Normal => match key.code {
                         KeyCode::Char('j') | KeyCode::Down => app.next(),
@@ -347,6 +410,9 @@ fn run_app(
                         KeyCode::Char('t') => {
                             app.show_done = !app.show_done;
                             app.refilter();
+                        }
+                        KeyCode::Char('c') => {
+                            app.copy_selected_title();
                         }
                         _ => {}
                     },
@@ -693,13 +759,15 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.mode {
         Mode::Normal => {
             let done_hint = if app.show_done { "t 隐藏完成" } else { "t 显示完成" };
+            let copy_hint = app.copy_msg.as_deref().unwrap_or("c 复制标题");
             (
                 format!(
-                    "j/k 上下 | / 搜索 | 回车 确认 | a 添加 | e 编辑 | d 删除 | {} | q 退出 | {} 项",
+                    "j/k 上下 | / 搜索 | 回车 确认 | a 添加 | e 编辑 | d 删除 | {} | {} | q 退出 | {} 项",
                     done_hint,
+                    copy_hint,
                     app.filtered.len()
                 ),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(if app.copy_msg.is_some() { Color::Green } else { Color::DarkGray }),
             )
         }
         Mode::Search => (

@@ -79,6 +79,14 @@ pub async fn is_stale(pool: &SqlitePool, project_id: &str) -> Result<bool> {
         return Ok(false);
     }
 
+    // 检查 Qdrant collection 是否存在，不存在则视为 stale
+    let client = qdrant_client()?;
+    let collection = collection_name(project_id);
+    if !client.collection_exists(&collection).await? {
+        eprintln!("[qdrant] collection '{}' missing, marking stale", collection);
+        return Ok(true);
+    }
+
     let files = collect_files(&base)?;
 
     for (path, rel) in &files {
@@ -280,6 +288,13 @@ pub async fn search(
     eprintln!("[qdrant] search start project_id={} top_k={}", project_id, top_k);
     let client = qdrant_client()?;
     let collection = collection_name(project_id);
+
+    // 检查 collection 是否存在，不存在则创建并返回空结果
+    if !client.collection_exists(&collection).await? {
+        eprintln!("[qdrant] collection '{}' not found, creating...", collection);
+        ensure_collection(&client, &collection).await?;
+        return Ok(Vec::new());
+    }
 
     eprintln!("[qdrant] searching collection '{}'", collection);
     let result = client
