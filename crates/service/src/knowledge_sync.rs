@@ -180,10 +180,19 @@ fn summarize_diff(diff: &str) -> String {
         }
     }
     if summary.len() > 2000 {
-        summary.truncate(2000);
+        let truncate_at = floor_char_boundary(&summary, 2000);
+        summary.truncate(truncate_at);
         summary.push_str("\n...");
     }
     summary
+}
+
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if s.is_char_boundary(max) {
+        max
+    } else {
+        (0..max).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
+    }
 }
 
 fn is_trivial_commit(stat: &str) -> bool {
