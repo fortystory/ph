@@ -59,6 +59,86 @@ pub async fn update_todos_by_ids(
     Ok(())
 }
 
+pub async fn update_todo_by_short_id(
+    pool: &SqlitePool,
+    short_id: &str,
+    title: Option<&str>,
+    status: Option<&str>,
+    priority: Option<i32>,
+) -> Result<usize> {
+    // 通过短 ID 前缀匹配完整 UUID
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM todos WHERE id LIKE ?",
+    )
+    .bind(format!("{}%", short_id))
+    .fetch_all(pool)
+    .await?;
+
+    if ids.is_empty() {
+        // 尝试精确匹配
+        let exact: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM todos WHERE id = ?",
+        )
+        .bind(short_id)
+        .fetch_all(pool)
+        .await?;
+
+        if exact.is_empty() {
+            anyhow::bail!("找不到匹配的 todo: {}", short_id);
+        }
+        return update_todo_batch(pool, &exact, title, status, priority).await;
+    }
+
+    update_todo_batch(pool, &ids, title, status, priority).await
+}
+
+async fn update_todo_batch(
+    pool: &SqlitePool,
+    ids: &[String],
+    title: Option<&str>,
+    status: Option<&str>,
+    priority: Option<i32>,
+) -> Result<usize> {
+    // 构建动态 SET 子句
+    let mut sets = Vec::new();
+    let mut params: Vec<String> = Vec::new();
+
+    if let Some(t) = title {
+        sets.push("title = ?");
+        params.push(t.to_string());
+    }
+    if let Some(s) = status {
+        sets.push("status = ?");
+        params.push(s.to_string());
+    }
+    if let Some(p) = priority {
+        sets.push("priority = ?");
+        params.push(p.to_string());
+    }
+
+    if sets.is_empty() {
+        anyhow::bail!("至少需要提供 title、status 或 priority 中的一个");
+    }
+
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "UPDATE todos SET {} WHERE id IN ({})",
+        sets.join(", "),
+        placeholders
+    );
+
+    let mut query = sqlx::query(&sql);
+    for param in &params {
+        query = query.bind(param);
+    }
+    for id in ids {
+        query = query.bind(id);
+    }
+
+    let result = query.execute(pool).await?;
+    Ok(result.rows_affected() as usize)
+}
+
 pub async fn delete_todos_by_ids(pool: &SqlitePool, ids: &[String]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());

@@ -234,6 +234,7 @@ docs/<todo-id>/
 - 每阶段开始前要求确认，除非传入 `--yes` 参数
 - 工作流中明确禁止 `git push`
 - 流程结束时可将 todo 标记为完成
+- 各阶段 prompt 告知 Claude 可用 MCP 工具更新 todo 状态（需求澄清后建议 in_progress，验收后建议 done）
 
 ### 交互式选择器（`ph work`）
 
@@ -256,6 +257,7 @@ docs/<todo-id>/
 | `ph_knowledge_search` | 语义搜索项目知识库 |
 | `ph_todo_list` | 列出待办事项 |
 | `ph_todo_doc_read` | 读取 todo 阶段文档 |
+| `ph_todo_update` | 更新 todo 标题、状态、优先级 |
 | `ph_knowledge_read` | 读取知识库文件 |
 | `ph_knowledge_capture` | 实时捕获知识到向量库 |
 

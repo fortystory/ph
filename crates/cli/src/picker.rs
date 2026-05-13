@@ -433,10 +433,10 @@ fn run_app(
                                 match key.code {
                                     KeyCode::Esc => form.cancel_title_edit(),
                                     KeyCode::Enter => form.confirm_title_edit(),
-                                    KeyCode::Left | KeyCode::Char('h') => {
+                                    KeyCode::Left => {
                                         form.title_cursor = form.title_cursor.saturating_sub(1);
                                     }
-                                    KeyCode::Right | KeyCode::Char('l') => {
+                                    KeyCode::Right => {
                                         form.title_cursor = (form.title_cursor + 1)
                                             .min(form.title.chars().count());
                                     }
@@ -951,7 +951,7 @@ fn render_form(f: &mut Frame, form: &FormState, projects: &[String], is_add: boo
         Span::styled(msg.clone(), Style::default().fg(Color::Red))
     } else if form.editing_title {
         Span::styled(
-            "h/l 移动光标 | Enter 确认 | Esc 撤销".to_string(),
+            "←/→ 移动光标 | Enter 确认 | Esc 撤销".to_string(),
             Style::default().fg(Color::DarkGray),
         )
     } else {

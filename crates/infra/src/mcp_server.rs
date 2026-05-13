@@ -169,6 +169,33 @@ fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "ph_todo_update",
+                    "description": "更新待办事项的标题、状态或优先级",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "todo_id": {
+                                "type": "string",
+                                "description": "Todo ID 或短 ID（8 位前缀）"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "新标题（可选）"
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["todo", "in_progress", "done"],
+                                "description": "新状态（可选）"
+                            },
+                            "priority": {
+                                "type": "integer",
+                                "description": "新优先级 0-5（可选）"
+                            }
+                        },
+                        "required": ["todo_id"]
+                    }
+                },
+                {
                     "name": "ph_todo_doc_read",
                     "description": "读取某个 todo 的阶段工作流文档",
                     "inputSchema": {
@@ -268,6 +295,10 @@ async fn handle_tools_call(
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, format!("Todo list failed: {e}")),
         },
+        "ph_todo_update" => match handle_todo_update(pool, arguments).await {
+            Ok(result) => JsonRpcResponse::success(id, result),
+            Err(e) => JsonRpcResponse::error(id, -32000, format!("Todo update failed: {e}")),
+        },
         "ph_todo_doc_read" => match handle_todo_doc_read(arguments) {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, format!("Doc read failed: {e}")),
@@ -346,6 +377,22 @@ async fn handle_todo_list(pool: &SqlitePool, args: Value) -> Result<Value> {
         .collect();
 
     Ok(json!({ "todos": items }))
+}
+
+async fn handle_todo_update(pool: &SqlitePool, args: Value) -> Result<Value> {
+    let todo_id = args["todo_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("todo_id required"))?;
+    let title = args["title"].as_str();
+    let status = args["status"].as_str();
+    let priority = args["priority"].as_i64().map(|p| p as i32);
+
+    let updated = crate::update_todo_by_short_id(pool, todo_id, title, status, priority).await?;
+
+    Ok(json!({
+        "updated": updated,
+        "message": format!("已更新 {} 条 todo 记录", updated),
+    }))
 }
 
 fn handle_todo_doc_read(args: Value) -> Result<Value> {
